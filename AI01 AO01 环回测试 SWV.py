@@ -27,6 +27,7 @@ polarity = 1
 POINTS_PER_PERIOD = 100
 DA_RATE = int(POINTS_PER_PERIOD * frequency)
 
+
 # ====================== 设备初始化 ======================
 err = DAQdll.OpenUSB()
 if err != 0: raise RuntimeError("USB open failed")
