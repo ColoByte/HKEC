@@ -6,37 +6,42 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 import matplotlib.pyplot as plt
 
-
 # ====================== DLL ======================
 DAQdll = WinDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Usb_Daq_V6505.dll"))
 dev = 0
 
 ADC_RATE, READ_BLOCK = 1000, 200
 
-
 # ====================== CV参数 ======================
-E_init, E_low, E_high = 0.0, -0.2, 0.6
+E_init, E_low, E_high = -0.2, -0.2, 0.6
 scan_rate = 0.1
-segments = 10
+segments = 4
 quiet_time = 2.0
 direction = 0
 fs = 100
 
+# ====================== 继电器控制 ======================
+relay_channel = 1
+relay_settle_time = 0.05
+
+def get_relay_mask(ch):
+    if ch == 0: return 15
+    if ch == 1: return 240
+    if ch == 2: return 3840
+    return 0
 
 # ====================== 打开设备 ======================
 err = DAQdll.OpenUSB()
 if err != 0: raise RuntimeError("USB open failed")
 
+DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
+time.sleep(relay_settle_time)
 
 # ====================== DAC转换 ======================
 def v2d(v): return int((v + 10) / 20 * 65535 + 0.5)
 
-
-# ====================== CV波形生成（内嵌版） ======================
+# ====================== CV波形生成 ======================
 def generate_cv_waveform(E_init, E_low, E_high, scan_rate, segments, quiet_time, direction, fs):
-
-    if not (E_low < E_high): raise ValueError("E_low < E_high required")
-    if scan_rate <= 0: raise ValueError("scan_rate > 0 required")
 
     dt = 1 / fs
 
@@ -63,10 +68,9 @@ def generate_cv_waveform(E_init, E_low, E_high, scan_rate, segments, quiet_time,
     idx = int(round(ratio * N_half))
 
     E_main = E_full[idx:idx + N_total]
-
     E_total = np.concatenate([E_quiet, E_main])
-    t = np.arange(len(E_total)) * dt
 
+    t = np.arange(len(E_total)) * dt
     return t, E_total
 
 
@@ -84,11 +88,9 @@ total_samples = int(total_time * ADC_RATE)
 
 print("DAC:", len(dac), "ADC:", total_samples)
 
-
 # ====================== DA ======================
 DAQdll.Set_DA_Scan(dev, 0, fs, 1)
 DAQdll.Sent_DaData(dev, len(dac), (c_uint * len(dac))(*dac))
-
 
 # ====================== ADC ======================
 buf = (c_float * total_samples)()
@@ -96,7 +98,6 @@ collected = 0
 
 DAQdll.Ad_Continu_Conf(dev, 0, 0, 1, 0, ADC_RATE, 0, 0, 0, 0)
 t0 = time.time()
-
 
 # ====================== UI ======================
 pg.setConfigOption('background', 'w')
@@ -111,7 +112,6 @@ plot.setLabel('left', 'V')
 plot.setLabel('bottom', 't(s)')
 curve = plot.plot(pen='r')
 win.show()
-
 
 # ====================== 采集 ======================
 def task():
@@ -138,6 +138,7 @@ def task():
 
         DAQdll.AD_Continu_Stop(dev)
         DAQdll.Set_DA_Scan(dev, 0, fs, 0)
+        DAQdll.Write_Port_Out(dev, 0)
 
         t_adc = np.arange(total_samples) / ADC_RATE
 
@@ -159,14 +160,18 @@ def task():
         plt.close()
 
         DAQdll.CloseUSB()
-
         print("done:", time.time() - t0)
         QTimer.singleShot(1000, app.quit)
-
 
 # ====================== timer ======================
 timer = QTimer()
 timer.timeout.connect(task)
 timer.start(30)
 
-sys.exit(app.exec_())
+try:
+    sys.exit(app.exec_())
+finally:
+    DAQdll.AD_Continu_Stop(dev)
+    DAQdll.Set_DA_Scan(dev, 0, fs, 0)
+    DAQdll.Write_Port_Out(dev, 0)
+    DAQdll.CloseUSB()

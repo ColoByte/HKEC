@@ -97,10 +97,10 @@ app = QApplication(sys.argv)
 win = pg.GraphicsLayoutWidget(title="SWV")
 win.resize(1000, 600)
 plot = win.addPlot()
-plot.setLabel('left', 'Voltage (mV)')
+plot.setLabel('left', 'Voltage (V)')
 plot.setLabel('bottom', 't(s)')
 # plot.setYRange(E_init - amplitude - 0.1, E_final + amplitude + 0.1)
-plot.setYRange(-5, 5.5)
+# plot.setYRange(-1, 1)
 curve = plot.plot(pen='r')
 win.show()
 
@@ -123,7 +123,7 @@ def task():
         timer.stop()
         DAQdll.AD_Continu_Stop(dev)
         DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
-        DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
+        DAQdll.Write_Port_Out(dev, 0)
         time.sleep(0.1)
         DAQdll.CloseUSB()
 
@@ -137,14 +137,16 @@ def task():
         plt.tight_layout(); plt.savefig("swv_result.png", dpi=300); plt.close()
 
         print("done:", time.time() - t0)
-        QTimer.singleShot(1000, app.quit)
+        # QTimer.singleShot(1000, app.quit)
 
 timer = QTimer()
 timer.timeout.connect(task)
 timer.start(30)
 
-sys.exit(app.exec_())
 try:
     sys.exit(app.exec_())
 finally:
+    DAQdll.AD_Continu_Stop(dev)
+    DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
     DAQdll.Write_Port_Out(dev, 0)
+    DAQdll.CloseUSB()
