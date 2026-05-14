@@ -13,25 +13,22 @@ dev = 0
 ADC_RATE, READ_BLOCK = 1000, 200
 
 # ====================== SWV参数 ======================
-# 电位扫描参数
-E_init = -0.2       # 初始电位 (V)
-E_final = 0.2       # 终点电位 (V)
-E_incr = 0.004      # 电位增量/步长 (V)
+E_init = -0.2
+E_final = 0.2
+E_incr = 0.004
 
-# 脉冲与时间参数
-amplitude = 0.025   # 脉冲振幅 (V)
-frequency = 10      # 频率 (Hz)
-quiet_time = 2.0    # 静置时间 (s)
+amplitude = 0.025
+frequency = 10
+quiet_time = 2.0
 polarity = 1
 
 POINTS_PER_PERIOD = 100
 DA_RATE = int(POINTS_PER_PERIOD * frequency)
 
-#继电器控制策略
-relay_channel = 1      # 0/1/2
+# ====================== 继电器 ======================
+relay_channel = 1
 relay_settle_time = 0.05
 
-#继电器映射
 def get_relay_mask(ch):
     if ch == 0: return 15
     if ch == 1: return 240
@@ -40,12 +37,14 @@ def get_relay_mask(ch):
 
 # ====================== 设备初始化 ======================
 err = DAQdll.OpenUSB()
-if err != 0: raise RuntimeError("USB open failed")
+if err != 0:
+    raise RuntimeError("USB open failed")
 
 DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
 time.sleep(relay_settle_time)
 
-def v2d(v): return int((v + 10) / 20 * 65535 + 0.5)
+def v2d(v):
+    return int((v + 10) / 20 * 65535 + 0.5)
 
 # ====================== SWV生成 ======================
 def gen_swv():
@@ -55,7 +54,8 @@ def gen_swv():
     steps, e = [], E_init
     while True:
         steps.append(e)
-        if e >= E_final: break
+        if e >= E_final:
+            break
         e += E_incr
     steps = np.array(steps)
 
@@ -64,9 +64,11 @@ def gen_swv():
 
     for e in steps:
         if polarity:
-            c = np.concatenate([np.full(Nh, e - amplitude), np.full(Nh, e + amplitude)])
+            c = np.concatenate([np.full(Nh, e - amplitude),
+                                np.full(Nh, e + amplitude)])
         else:
-            c = np.concatenate([np.full(Nh, e + amplitude), np.full(Nh, e - amplitude)])
+            c = np.concatenate([np.full(Nh, e + amplitude),
+                                np.full(Nh, e - amplitude)])
         wave.append(c)
 
     return np.concatenate([E_q] + wave)
@@ -87,7 +89,37 @@ DAQdll.Sent_DaData(dev, len(dac), (c_uint * len(dac))(*dac))
 buf = (c_float * total_samples)()
 collected = 0
 DAQdll.Ad_Continu_Conf(dev, 0, 0, 1, 0, ADC_RATE, 0, 0, 0, 0)
+
 t0 = time.time()
+
+# ====================== 安全关闭（关键新增） ======================
+closed = False
+
+def safe_stop():
+    global closed
+    if closed:
+        return
+    closed = True
+
+    try:
+        DAQdll.AD_Continu_Stop(dev)
+    except:
+        pass
+
+    try:
+        DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
+    except:
+        pass
+
+    try:
+        DAQdll.Write_Port_Out(dev, 0)
+    except:
+        pass
+
+    try:
+        DAQdll.CloseUSB()
+    except:
+        pass
 
 # ====================== UI ======================
 pg.setConfigOption('background', 'w')
@@ -96,49 +128,59 @@ pg.setConfigOption('foreground', 'k')
 app = QApplication(sys.argv)
 win = pg.GraphicsLayoutWidget(title="SWV")
 win.resize(1000, 600)
+
 plot = win.addPlot()
 plot.setLabel('left', 'Voltage (V)')
 plot.setLabel('bottom', 't(s)')
-# plot.setYRange(E_init - amplitude - 0.1, E_final + amplitude + 0.1)
-# plot.setYRange(-1, 1)
 curve = plot.plot(pen='r')
 win.show()
 
 # ====================== 采集 ======================
 def task():
     global collected
+
     n = DAQdll.Get_AdBuf_Size(dev)
 
     if n >= READ_BLOCK and collected < total_samples:
         m = min(READ_BLOCK, total_samples - collected)
         tmp = (c_float * m)()
         r = DAQdll.Read_AdBuf(dev, tmp, m)
+
         if r > 0:
             buf[collected:collected + r] = tmp[:r]
             collected += r
+
             t = np.arange(collected) / ADC_RATE
             curve.setData(t, np.array(buf[:collected]))
 
     if collected >= total_samples:
         timer.stop()
-        DAQdll.AD_Continu_Stop(dev)
-        DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
-        DAQdll.Write_Port_Out(dev, 0)
-        time.sleep(0.1)
-        DAQdll.CloseUSB()
+
+        safe_stop()
 
         t = np.arange(total_samples) / ADC_RATE
-        np.savetxt("swv_result.csv", np.column_stack([t, np.array(buf[:total_samples])]),
-                   delimiter=",", header="time,voltage", comments="")
+
+        np.savetxt(
+            "swv_result.csv",
+            np.column_stack([t, np.array(buf[:total_samples])]),
+            delimiter=",",
+            header="time,voltage",
+            comments=""
+        )
 
         plt.figure(figsize=(10,5))
         plt.plot(t, buf[:total_samples])
-        plt.xlabel("t(s)"); plt.ylabel("V"); plt.title("SWV")
-        plt.tight_layout(); plt.savefig("swv_result.png", dpi=300); plt.close()
+        plt.xlabel("t(s)")
+        plt.ylabel("V")
+        plt.title("SWV")
+        plt.tight_layout()
+        plt.savefig("swv_result.png", dpi=300)
+        plt.close()
 
         print("done:", time.time() - t0)
-        # QTimer.singleShot(1000, app.quit)
+        QTimer.singleShot(3000, app.quit)
 
+# ====================== timer ======================
 timer = QTimer()
 timer.timeout.connect(task)
 timer.start(30)
@@ -146,7 +188,4 @@ timer.start(30)
 try:
     sys.exit(app.exec_())
 finally:
-    DAQdll.AD_Continu_Stop(dev)
-    DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
-    DAQdll.Write_Port_Out(dev, 0)
-    DAQdll.CloseUSB()
+    safe_stop()

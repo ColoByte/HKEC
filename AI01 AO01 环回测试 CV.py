@@ -37,6 +37,27 @@ if err != 0: raise RuntimeError("USB open failed")
 DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
 time.sleep(relay_settle_time)
 
+# ====================== cleanup（新增核心） ======================
+cleanup_done = False
+
+def cleanup():
+    global cleanup_done
+    if cleanup_done:
+        return
+    cleanup_done = True
+
+    try: DAQdll.AD_Continu_Stop(dev)
+    except: pass
+
+    try: DAQdll.Set_DA_Scan(dev, 0, fs, 0)
+    except: pass
+
+    try: DAQdll.Write_Port_Out(dev, 0)
+    except: pass
+
+    try: DAQdll.CloseUSB()
+    except: pass
+
 # ====================== DAC转换 ======================
 def v2d(v): return int((v + 10) / 20 * 65535 + 0.5)
 
@@ -135,10 +156,7 @@ def task():
     if collected >= total_samples:
 
         timer.stop()
-
-        DAQdll.AD_Continu_Stop(dev)
-        DAQdll.Set_DA_Scan(dev, 0, fs, 0)
-        DAQdll.Write_Port_Out(dev, 0)
+        cleanup()
 
         t_adc = np.arange(total_samples) / ADC_RATE
 
@@ -159,7 +177,6 @@ def task():
         plt.savefig("cv_result.png", dpi=300)
         plt.close()
 
-        DAQdll.CloseUSB()
         print("done:", time.time() - t0)
         QTimer.singleShot(1000, app.quit)
 
@@ -171,7 +188,4 @@ timer.start(30)
 try:
     sys.exit(app.exec_())
 finally:
-    DAQdll.AD_Continu_Stop(dev)
-    DAQdll.Set_DA_Scan(dev, 0, fs, 0)
-    DAQdll.Write_Port_Out(dev, 0)
-    DAQdll.CloseUSB()
+    cleanup()

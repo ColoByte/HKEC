@@ -33,8 +33,10 @@ def v2d(v): return int((v + 10) / 20 * 65535 + 0.5)
 
 # ====================== 设备初始化 ======================
 err = DAQdll.OpenUSB()
-if err != 0: raise RuntimeError("USB open failed")
+if err != 0:
+    raise RuntimeError("USB open failed")
 
+# ✔️ 新增：继电器必须在DAQ启动前统一设置
 DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
 time.sleep(relay_settle_time)
 
@@ -132,11 +134,9 @@ def task():
         plt.savefig("lsv_result.png", dpi=300)
         plt.close()
 
-        DAQdll.Write_Port_Out(dev, 0)
-        DAQdll.CloseUSB()
-
         print("done:", time.time() - t0)
-        QTimer.singleShot(60000, app.quit)
+
+        QTimer.singleShot(1000, app.quit)
 
 # ====================== timer ======================
 timer = QTimer()
@@ -146,7 +146,23 @@ timer.start(30)
 try:
     sys.exit(app.exec_())
 finally:
-    DAQdll.AD_Continu_Stop(dev)
-    DAQdll.Set_DA_Scan(dev, 0, fs, 0)
-    DAQdll.Write_Port_Out(dev, 0)
-    DAQdll.CloseUSB()
+    # ✔️ 统一释放（避免你之前 access violation）
+    try:
+        DAQdll.AD_Continu_Stop(dev)
+    except:
+        pass
+
+    try:
+        DAQdll.Set_DA_Scan(dev, 0, fs, 0)
+    except:
+        pass
+
+    try:
+        DAQdll.Write_Port_Out(dev, 0)
+    except:
+        pass
+
+    try:
+        DAQdll.CloseUSB()
+    except:
+        pass
