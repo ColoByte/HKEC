@@ -27,10 +27,23 @@ polarity = 1
 POINTS_PER_PERIOD = 100
 DA_RATE = int(POINTS_PER_PERIOD * frequency)
 
+#继电器控制策略
+relay_channel = 1      # 0/1/2
+relay_settle_time = 0.05
+
+#继电器映射
+def get_relay_mask(ch):
+    if ch == 0: return 15
+    if ch == 1: return 240
+    if ch == 2: return 3840
+    return 0
 
 # ====================== 设备初始化 ======================
 err = DAQdll.OpenUSB()
 if err != 0: raise RuntimeError("USB open failed")
+
+DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
+time.sleep(relay_settle_time)
 
 def v2d(v): return int((v + 10) / 20 * 65535 + 0.5)
 
@@ -86,7 +99,8 @@ win.resize(1000, 600)
 plot = win.addPlot()
 plot.setLabel('left', 'Voltage (mV)')
 plot.setLabel('bottom', 't(s)')
-plot.setYRange(E_init - amplitude - 0.1, E_final + amplitude + 0.1)
+# plot.setYRange(E_init - amplitude - 0.1, E_final + amplitude + 0.1)
+plot.setYRange(-5, 5.5)
 curve = plot.plot(pen='r')
 win.show()
 
@@ -109,6 +123,7 @@ def task():
         timer.stop()
         DAQdll.AD_Continu_Stop(dev)
         DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
+        DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
         time.sleep(0.1)
         DAQdll.CloseUSB()
 
@@ -129,3 +144,7 @@ timer.timeout.connect(task)
 timer.start(30)
 
 sys.exit(app.exec_())
+try:
+    sys.exit(app.exec_())
+finally:
+    DAQdll.Write_Port_Out(dev, 0)
