@@ -9,6 +9,7 @@ from PyQt5.QtCore import QTimer
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+# ====================== 输出路径（核心） ======================
 RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 BASE_DIR = "DPV_data"
 OUT_DIR = os.path.join(BASE_DIR, RUN_TS)
@@ -35,6 +36,10 @@ quiet_time = 1.0
 POINTS_PER_PERIOD = 100
 DA_RATE = int(POINTS_PER_PERIOD / pulse_period)
 
+# ====================== 差分参数（固定） ======================
+IDX_LOW = 352
+IDX_HIGH = 412
+
 # ====================== 继电器 ======================
 relay_channel = 1
 relay_settle_time = 0.05
@@ -49,18 +54,8 @@ def get_relay_mask(ch):
 def voltage_to_da(v):
     return int((v + 10.0) / 20.0 * 65535 + 0.5)
 
-# ====================== 打开设备 ======================
-err = DAQdll.OpenUSB()
-if err != 0:
-    raise RuntimeError("设备打开失败")
-
-# ✔️ 统一：继电器控制（必须在DAQ开始前）
-DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
-time.sleep(relay_settle_time)
-
 # ====================== DPV生成 ======================
 def generate_dpv():
-
     steps = []
     E = E_init
     while True:
@@ -74,7 +69,6 @@ def generate_dpv():
     N_pulse = POINTS_PER_PERIOD - N_base
 
     waveform = []
-
     N_quiet = int(quiet_time * DA_RATE)
     waveform.append(np.full(N_quiet, E_init))
 
@@ -84,6 +78,14 @@ def generate_dpv():
         waveform.append(np.concatenate([base, pulse]))
 
     return np.concatenate(waveform)
+
+# ====================== 初始化设备 ======================
+err = DAQdll.OpenUSB()
+if err != 0:
+    raise RuntimeError("设备打开失败")
+
+DAQdll.Write_Port_Out(dev, get_relay_mask(relay_channel))
+time.sleep(relay_settle_time)
 
 # ====================== waveform ======================
 E_total = generate_dpv()
@@ -121,6 +123,34 @@ plot.setYRange(-0.5, 0.5)
 curve = plot.plot(pen='r')
 win.show()
 
+# ====================== 差分计算 ======================
+def dpv_diff(v):
+    # 去静默段
+    quiet_points = int(quiet_time * ADC_RATE)
+    v = v[quiet_points:]
+
+    # 每周期ADC点数（0.5s * 1000Hz = 500）
+    P = int(0.5 * ADC_RATE)
+
+    delta = []
+
+    n = 0
+    while True:
+        low_idx = IDX_LOW + n * P
+        high_idx = IDX_HIGH + n * P
+
+        # 越界直接停止（最后周期自动丢弃）
+        if high_idx >= len(v):
+            break
+
+        delta.append(v[high_idx] - v[low_idx])
+        n += 1
+
+    delta = np.array(delta)
+
+    E = E_init + np.arange(len(delta)) * E_incr
+
+    return E, delta
 # ====================== 采集 ======================
 def task():
     global collected
@@ -147,25 +177,54 @@ def task():
         DAQdll.AD_Continu_Stop(dev)
         DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
 
+        raw = np.array(adc_buffer[:total_samples])
+
+        # ====================== 保存原始 ======================
         t = np.arange(total_samples) / ADC_RATE
 
-        np.savetxt(
-            os.path.join(OUT_DIR, "dpv_result.csv"),
-            np.column_stack([t, np.array(adc_buffer[:total_samples])]),
-            delimiter=",",
-            header="time,voltage",
-            comments=""
-        )
+        raw_csv = os.path.join(OUT_DIR, f"dpv_result_{RUN_TS}.csv")
+        raw_png = os.path.join(OUT_DIR, f"dpv_result_{RUN_TS}.png")
+
+        np.savetxt(raw_csv,
+                   np.column_stack([t, raw]),
+                   delimiter=",",
+                   header="time,voltage",
+                   comments="")
 
         plt.figure(figsize=(10, 5))
-        plt.plot(t, adc_buffer[:total_samples])
-        plt.xlabel("Time (s)")
-        plt.ylabel("Voltage (V)")
-        plt.title("DPV Result")
-        plt.savefig(os.path.join(OUT_DIR, "dpv_result.png"), dpi=300)
+        plt.plot(t, raw)
+        plt.title("DPV Raw")
+        plt.tight_layout()
+        plt.savefig(raw_png, dpi=300)
+        plt.close()
+
+        # ====================== 差分处理 ======================
+        E, delta = dpv_diff(raw)
+
+        diff_csv = os.path.join(
+            OUT_DIR,
+            f"dpv_processed_L{IDX_LOW}_H{IDX_HIGH}_{RUN_TS}.csv"
+        )
+
+        diff_png = os.path.join(
+            OUT_DIR,
+            f"dpv_processed_L{IDX_LOW}_H{IDX_HIGH}_{RUN_TS}.png"
+        )
+
+        np.savetxt(diff_csv,
+                   np.column_stack([E, delta]),
+                   delimiter=",",
+                   header="E(V),deltaV",
+                   comments="")
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(E, delta)
+        plt.title("DPV Differential")
+        plt.tight_layout()
+        plt.savefig(diff_png, dpi=300)
+        plt.close()
 
         print("完成，数据已保存")
-
         QTimer.singleShot(1000, app.quit)
 
 # ====================== timer ======================

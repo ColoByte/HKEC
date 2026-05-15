@@ -5,6 +5,13 @@ import pyqtgraph as pg
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 import matplotlib.pyplot as plt
+from datetime import datetime
+
+# ====================== 输出路径（对齐DPV） ======================
+RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
+BASE_DIR = "SWV_data"
+OUT_DIR = os.path.join(BASE_DIR, RUN_TS)
+os.makedirs(OUT_DIR, exist_ok=True)
 
 # ====================== DLL ======================
 DAQdll = WinDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Usb_Daq_V6505.dll"))
@@ -25,15 +32,16 @@ polarity = 1
 POINTS_PER_PERIOD = 100
 DA_RATE = int(POINTS_PER_PERIOD * frequency)
 
+# ====================== 差分参数 ======================
+IDX_LOW = 38
+IDX_HIGH = 59
+
 # ====================== 继电器 ======================
 relay_channel = 1
 relay_settle_time = 0.05
 
 def get_relay_mask(ch):
-    if ch == 0: return 15
-    if ch == 1: return 240
-    if ch == 2: return 3840
-    return 0
+    return {0:15, 1:240, 2:3840}.get(ch, 0)
 
 # ====================== 设备初始化 ======================
 err = DAQdll.OpenUSB()
@@ -92,35 +100,6 @@ DAQdll.Ad_Continu_Conf(dev, 0, 0, 1, 0, ADC_RATE, 0, 0, 0, 0)
 
 t0 = time.time()
 
-# ====================== 安全关闭（关键新增） ======================
-closed = False
-
-def safe_stop():
-    global closed
-    if closed:
-        return
-    closed = True
-
-    try:
-        DAQdll.AD_Continu_Stop(dev)
-    except:
-        pass
-
-    try:
-        DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
-    except:
-        pass
-
-    try:
-        DAQdll.Write_Port_Out(dev, 0)
-    except:
-        pass
-
-    try:
-        DAQdll.CloseUSB()
-    except:
-        pass
-
 # ====================== UI ======================
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
@@ -131,9 +110,33 @@ win.resize(1000, 600)
 
 plot = win.addPlot()
 plot.setLabel('left', 'Voltage (V)')
-plot.setLabel('bottom', 't(s)')
+plot.setLabel('bottom', 't (s)')
 curve = plot.plot(pen='r')
 win.show()
+
+# ====================== SWV差分（DPV风格递推） ======================
+def swv_diff(v):
+    v = v[int(quiet_time * ADC_RATE):]
+
+    P = POINTS_PER_PERIOD
+
+    delta = []
+    n = 0
+
+    while True:
+        low_idx = IDX_LOW + n * P
+        high_idx = IDX_HIGH + n * P
+
+        if high_idx >= len(v):
+            break
+
+        delta.append(v[high_idx] - v[low_idx])
+        n += 1
+
+    delta = np.array(delta)
+    E_axis = E_init + np.arange(len(delta)) * E_incr
+
+    return E_axis, delta
 
 # ====================== 采集 ======================
 def task():
@@ -156,25 +159,61 @@ def task():
     if collected >= total_samples:
         timer.stop()
 
-        safe_stop()
+        DAQdll.AD_Continu_Stop(dev)
+        DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
 
+        raw = np.array(buf[:total_samples])
         t = np.arange(total_samples) / ADC_RATE
 
+        # ====================== raw保存 ======================
+        raw_csv = os.path.join(OUT_DIR, f"swv_result_{RUN_TS}.csv")
+        raw_png = os.path.join(OUT_DIR, f"swv_result_{RUN_TS}.png")
+
         np.savetxt(
-            "swv_result.csv",
-            np.column_stack([t, np.array(buf[:total_samples])]),
+            raw_csv,
+            np.column_stack([t, raw]),
             delimiter=",",
             header="time,voltage",
             comments=""
         )
 
-        plt.figure(figsize=(10,5))
-        plt.plot(t, buf[:total_samples])
-        plt.xlabel("t(s)")
-        plt.ylabel("V")
-        plt.title("SWV")
+        plt.figure()
+        plt.plot(t, raw)
+        plt.xlabel("Time (s)")
+        plt.ylabel("Voltage (V)")
+        plt.title("SWV Raw")
         plt.tight_layout()
-        plt.savefig("swv_result.png", dpi=300)
+        plt.savefig(raw_png, dpi=300)
+        plt.close()
+
+        # ====================== 差分处理 ======================
+        E_axis, delta = swv_diff(raw)
+
+        diff_csv = os.path.join(
+            OUT_DIR,
+            f"swv_processed_L{IDX_LOW}_H{IDX_HIGH}_{RUN_TS}.csv"
+        )
+
+        diff_png = os.path.join(
+            OUT_DIR,
+            f"swv_processed_L{IDX_LOW}_H{IDX_HIGH}_{RUN_TS}.png"
+        )
+
+        np.savetxt(
+            diff_csv,
+            np.column_stack([E_axis, delta]),
+            delimiter=",",
+            header="E(V),deltaV",
+            comments=""
+        )
+
+        plt.figure()
+        plt.plot(E_axis, delta)
+        plt.xlabel("Potential (V)")
+        plt.ylabel("ΔV")
+        plt.title("SWV Differential")
+        plt.tight_layout()
+        plt.savefig(diff_png, dpi=300)
         plt.close()
 
         print("done:", time.time() - t0)
@@ -188,4 +227,19 @@ timer.start(30)
 try:
     sys.exit(app.exec_())
 finally:
-    safe_stop()
+    try:
+        DAQdll.AD_Continu_Stop(dev)
+    except:
+        pass
+    try:
+        DAQdll.Set_DA_Scan(dev, 0, DA_RATE, 0)
+    except:
+        pass
+    try:
+        DAQdll.Write_Port_Out(dev, 0)
+    except:
+        pass
+    try:
+        DAQdll.CloseUSB()
+    except:
+        pass
